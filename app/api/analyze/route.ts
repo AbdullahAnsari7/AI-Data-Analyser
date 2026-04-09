@@ -6,7 +6,6 @@ export async function POST(req: NextRequest) {
   try {
     const { query, headers, sampleRows } = await req.json()
 
-    // 🔒 Validation
     if (!query || !headers || !sampleRows) {
       return NextResponse.json(
         { error: "Missing required fields" },
@@ -24,36 +23,38 @@ export async function POST(req: NextRequest) {
 
     const ai = new GoogleGenAI({ apiKey })
 
-    // 🧠 STRONG PROMPT (NO JSON BREAKING)
     const prompt = `
-You are a strict JSON generator.
+You are a strict JSON generator for a data analyst dashboard.
 
-Convert the user query into structured JSON.
-
-Columns:
+Available columns:
 ${headers.join(", ")}
 
 User question:
 "${query}"
 
+Your job:
+1. Understand what analysis the user wants
+2. Choose the best chart type
+3. Return ONLY valid JSON
+
 IMPORTANT RULES:
-- Return ONLY valid JSON
-- No explanation
-- No extra text
+- Return ONLY JSON
 - No markdown
 - No backticks
+- No explanation outside JSON
 - Always include all fields
 
-FORMAT:
+Use this exact format:
 {
   "operation": "top | sum | average | group",
   "column": "column name",
   "metric": "column name",
-  "limit": 5
+  "limit": 5,
+  "chartRecommendation": "bar | pie | line",
+  "insight": "short summary sentence"
 }
 `
 
-    // 🚀 Gemini call
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
@@ -62,42 +63,39 @@ FORMAT:
     const text = response.text ?? ""
     const clean = text.replace(/```json|```/g, "").trim()
 
-    // 🛡️ SAFE PARSE
-    let structuredQuery
+    let structuredQuery: any
 
     try {
       structuredQuery = JSON.parse(clean)
-    } catch (err) {
-      console.error("JSON parse failed:", clean)
-
+    } catch {
       return NextResponse.json(
         { error: "AI returned invalid format. Try again." },
         { status: 500 }
       )
     }
 
-    // 🔁 FALLBACK (VERY IMPORTANT)
     if (!structuredQuery.operation) {
       structuredQuery = {
         operation: "group",
         column: headers[0],
         metric: headers[1] || headers[0],
         limit: 5,
+        chartRecommendation: "bar",
+        insight: "Here is the processed summary of your data.",
       }
     }
 
-    // ⚙️ REAL DATA PROCESSING
     const processed = processData(sampleRows, structuredQuery)
 
     return NextResponse.json({
-      insight: `Performed ${structuredQuery.operation} on ${
-        structuredQuery.column || structuredQuery.metric || "data"
-      }`,
+      insight:
+        structuredQuery.insight ||
+        `Performed ${structuredQuery.operation} on ${structuredQuery.column || structuredQuery.metric || "data"}`,
       chartData: Array.isArray(processed) ? processed : [],
       tableData: Array.isArray(processed)
         ? processed
         : [{ value: processed }],
-      chartRecommendation: "bar",
+      chartRecommendation: structuredQuery.chartRecommendation || "bar",
     })
   } catch (error: any) {
     console.error("Analyze API error:", error)
